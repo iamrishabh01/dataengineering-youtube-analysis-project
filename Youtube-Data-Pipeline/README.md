@@ -32,56 +32,22 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 
 ### High-Level System Design
 
-```
-                    ┌─────────────────────┐
-                    │  YouTube API v3     │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │   Bronze Layer       │
-                    │  (Raw JSON in S3)    │
-                    └──────────┬───────────┘
-                               │
-                ┌──────────────┴──────────────┐
-                │                             │
-                ▼                             ▼
-        ┌──────────────┐           ┌──────────────┐
-        │ Glue (PySpark)│           │  Lambda      │
-        │ Transform +   │           │  Json2Parquet│
-        │ Cleanse       │           │               │
-        └──────────┬───┘           └────────┬──────┘
-                   │                        │
-                   └────────┬───────────────┘
-                            │
-                            ▼
-                   ┌──────────────────────┐
-                   │   Silver Layer       │
-                   │ (Cleansed & Curated) │
-                   └──────────┬───────────┘
-                              │
-                              ▼
-                   ┌──────────────────────┐
-                   │  DQ Lambda           │
-                   │  (Quality Validation)│
-                   └──────────┬───────────┘
-                              │
-                        ┌─────┴─────┐
-                        │           │
-                   ✅ PASS      ❌ FAIL
-                        │           │
-                        ▼           ▼
-                   ┌────────┐   ┌──────────┐
-                   │ Glue   │   │ SNS Alert│
-                   │ Gold   │   └──────────┘
-                   │ Layer  │
-                   └────────┘
-                        │
-                        ▼
-            ┌───────────────────────────┐
-            │  Athena / QuickSight      │
-            │  (Business Intelligence) │
-            └───────────────────────────┘
+```Data Sources          Bronze              Silver            Quality Gate          Gold              Analytics
+┌──────────┐     ┌──────────────┐    ┌──────────────┐    ┌────────────┐    ┌──────────────┐    ┌──────────┐
+│ YouTube  │     │              │    │              │    │            │    │  trending_   │    │          │
+│ API v3   │────>│  Raw JSON    │───>│  Cleansed    │───>│  DQ Lambda │───>│  analytics   │───>│  Athena  │
+│          │     │  (S3)        │    │  Parquet     │    │  Validates │    │              │    │          │
+├──────────┤     │              │    │  (S3)        │    │  row count │    │  channel_    │    ├──────────┤
+│ Kaggle   │     │  Raw CSV     │    │              │    │  nulls     │    │  analytics   │    │  Quick-  │
+│ Dataset  │────>│  (S3)        │    │  Reference   │    │  schema    │    │              │    │  Sight   │
+│          │     │              │    │  Parquet     │    │  freshness │    │  category_   │    │          │
+└──────────┘     └──────────────┘    └──────────────┘    └────────────┘    │  analytics   │    └──────────┘
+                                                              │           └──────────────┘
+                                                         fail │
+                                                              ▼
+                                                        ┌────────────┐
+                                                        │  SNS Alert │
+                                                        └────────────┘
 ```
 
 ### Medallion Data Flow
