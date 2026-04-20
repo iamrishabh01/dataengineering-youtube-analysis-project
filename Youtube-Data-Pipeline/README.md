@@ -3,8 +3,7 @@
 ![AWS](https://img.shields.io/badge/AWS-FF9900?style=flat-square&logo=amazon-aws)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=flat-square&logo=python&logoColor=white)
 ![PySpark](https://img.shields.io/badge/PySpark-E25A1C?style=flat-square&logo=apache-spark&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Contributions](https://img.shields.io/badge/Contributions-Welcome-brightgreen?style=flat-square)
+
 
 A production-grade, cloud-native ETL pipeline that ingests YouTube trending video data across 10 regions, transforms it through a medallion architecture (Bronze → Silver → Gold), enforces automated data quality gates, and produces analytics-ready aggregations — all orchestrated by AWS Step Functions.
 
