@@ -142,13 +142,9 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 - Python 3.9+
 - Terraform (optional, for IaC deployment)
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/yourusername/youtube-data-pipeline.git
-cd youtube-data-pipeline
-```
 
-### 2. Set Up AWS Infrastructure
+
+### 1. Set Up AWS Infrastructure
 
 #### Option A: Manual Setup
 ```bash
@@ -179,7 +175,7 @@ terraform plan -var="environment=dev" -var="youtube_api_key=YOUR_API_KEY"
 terraform apply -auto-approve
 ```
 
-### 3. Deploy Lambda Functions
+### 2. Deploy Lambda Functions
 ```bash
 # Deploy ingestion Lambda
 cd lambdas/youtube_api_integration
@@ -200,7 +196,7 @@ cd ../../data_quality
 # Repeat similar steps...
 ```
 
-### 4. Deploy Glue Jobs
+### 3. Deploy Glue Jobs
 ```bash
 # Upload scripts to S3
 aws s3 cp glue_jobs/bronze_to_silver_statistics.py s3://yt-pipeline-scripts-${AWS_REGION}-${ENV}/glue/
@@ -216,7 +212,7 @@ aws glue create-job \
   --worker-type G.1X
 ```
 
-### 5. Deploy Step Functions Workflow
+### 4. Deploy Step Functions Workflow
 ```bash
 aws stepfunctions create-state-machine \
   --name yt-pipeline-${ENV} \
@@ -224,7 +220,7 @@ aws stepfunctions create-state-machine \
   --role-arn arn:aws:iam::ACCOUNT_ID:role/stepfunctions-execution-role
 ```
 
-### 6. Configure Scheduled Execution
+### 5. Configure Scheduled Execution
 ```bash
 # Run every 6 hours
 aws events put-rule \
@@ -236,7 +232,7 @@ aws events put-targets \
   --targets "Id=1,Arn=arn:aws:states:REGION:ACCOUNT_ID:stateMachine:yt-pipeline-${ENV},RoleArn=arn:aws:iam::ACCOUNT_ID:role/eventbridge-execution-role"
 ```
 
-### 7. Run the Pipeline
+### 6. Run the Pipeline
 
 #### Manual Execution
 ```bash
