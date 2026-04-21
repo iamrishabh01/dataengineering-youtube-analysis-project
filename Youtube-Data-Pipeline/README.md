@@ -7,7 +7,9 @@
 
 A production-grade, cloud-native ETL pipeline that ingests YouTube trending video data across 10 regions, transforms it through a medallion architecture (Bronze → Silver → Gold), enforces automated data quality gates, and produces analytics-ready aggregations — all orchestrated by AWS Step Functions.
 
-**[Features](#-features) • [Architecture](#-architecture) • [Quick Start](#-quick-start) • [Documentation](#-documentation) • 
+**[Features](#-features) • [Architecture](#-architecture) • [Quick Start](#-quick-start) • [Documentation](#-documentation)**
+
+---
 
 ## 🌟 Features
 
@@ -19,20 +21,24 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 - ✅ **Cost-Optimized Storage** — Parquet with Snappy compression reduces storage by 80%+
 - ✅ **Business-Ready Analytics** — Pre-built trending, channel, and category aggregation tables
 - ✅ **Production Monitoring** — CloudWatch + SNS alerts for pipeline health tracking
+- ✅ **Automated Archival** — S3 Glacier lifecycle policies for long-term Bronze data retention
 
 ### Technical Highlights
 - **Orchestration:** AWS Step Functions with retry logic and parallel execution
 - **Data Format:** Parquet (Snappy) for optimal query performance
 - **Processing:** PySpark on AWS Glue for distributed data transformations
-- **Storage:** S3 with intelligent tiering and lifecycle policies
+- **Storage:** S3 with intelligent tiering and lifecycle policies (including Glacier archival)
 - **Query Engine:** Amazon Athena for ad-hoc SQL analysis
 - **Security:** IAM roles with least-privilege access, encrypted S3 buckets
+
+---
 
 ## 🏗️ Architecture
 
 ### High-Level System Design
 
-```Data Sources          Bronze              Silver            Quality Gate          Gold              Analytics
+```
+Data Sources          Bronze              Silver            Quality Gate          Gold              Analytics
 ┌──────────┐     ┌──────────────┐    ┌──────────────┐    ┌────────────┐    ┌──────────────┐    ┌──────────┐
 │ YouTube  │     │              │    │              │    │            │    │  trending_   │    │          │
 │ API v3   │────>│  Raw JSON    │───>│  Cleansed    │───>│  DQ Lambda │───>│  analytics   │───>│  Athena  │
@@ -42,12 +48,14 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 │ Dataset  │────>│  (S3)        │    │  Reference   │    │  schema    │    │              │    │  Sight   │
 │          │     │              │    │  Parquet     │    │  freshness │    │  category_   │    │          │
 └──────────┘     └──────────────┘    └──────────────┘    └────────────┘    │  analytics   │    └──────────┘
-                                                              │           └──────────────┘
-                                                         fail │
-                                                              ▼
-                                                        ┌────────────┐
-                                                        │  SNS Alert │
-                                                        └────────────┘
+                       │                                       │           └──────────────┘
+                  Lifecycle                              fail  │
+                  Archive                                      ▼
+                       │                               ┌────────────┐
+                       ▼                               │  SNS Alert │
+               ┌──────────────┐                        └────────────┘
+               │  S3 Glacier  │
+               └──────────────┘
 ```
 
 ### Medallion Data Flow
@@ -57,11 +65,16 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 │ BRONZE LAYER (Raw Data Lake)                                            │
 │ ├─ youtube/raw_statistics/region=US/date=2026-04-01/hour=12/*.json     │
 │ └─ youtube/raw_statistics_reference_data/region=US/*.json               │
+│                                                                         │
+│ ⬇ Glue Crawler catalogs schema → Glue Data Catalog                     │
+│ ⬇ Lifecycle policy archives data → S3 Glacier (after 90 days)          │
 └─────────────────────────────────────────────────────────────────────────┘
                                   ↓
-              ┌──────────────────────────────────────┐
-              │ PySpark ETL (Schema + Cleansing)     │
-              └──────────────────────────────────────┘
+              ┌──────────────────────────────────────────────┐
+              │ Two Parallel Silver Transforms               │
+              │ • Lambda: raw JSON (API data) → Parquet      │
+              │ • Glue ETL: CSV/JSON (Kaggle data) → Parquet │
+              └──────────────────────────────────────────────┘
                                   ↓
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ SILVER LAYER (Cleansed & Validated)                                     │
@@ -89,14 +102,19 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 
 | Layer | Service | Purpose |
 |-------|---------|---------|
+| Trigger | Amazon EventBridge | Scheduled pipeline execution (every 6 hours) |
 | Ingestion | Lambda + YouTube API | Fetch trending videos & categories |
 | Storage | S3 (3 buckets) | Bronze/Silver/Gold data lake layers |
+| Archival | S3 Glacier | Long-term cold storage for Bronze raw data |
+| Schema Discovery | AWS Glue Crawler | Auto-catalog raw Bronze data schema |
 | Processing | AWS Glue (PySpark) | Distributed data transformations |
 | Orchestration | Step Functions | Workflow coordination & error handling |
 | Quality | Lambda + CloudWatch | Automated data validation gates |
 | Catalog | Glue Data Catalog | Metadata management |
 | Analytics | Athena + QuickSight | SQL queries & visualizations |
 | Monitoring | SNS + CloudWatch | Alerts & operational metrics |
+
+---
 
 ## 🚀 Quick Start
 
@@ -106,8 +124,6 @@ A production-grade, cloud-native ETL pipeline that ingests YouTube trending vide
 - AWS CLI configured (`aws configure`)
 - Python 3.9+
 - Terraform (optional, for IaC deployment)
-
-
 
 ### 1. Set Up AWS Infrastructure
 
@@ -130,6 +146,12 @@ aws glue create-database --database-input "{\"Name\": \"yt_gold_${ENV}\"}"
 # Create SNS topic for alerts
 aws sns create-topic --name yt-pipeline-alerts-${ENV}
 aws sns subscribe --topic-arn <TOPIC_ARN> --protocol email --notification-endpoint your-email@example.com
+
+# Configure S3 Glacier lifecycle on Bronze bucket
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket yt-pipeline-bronze-${AWS_REGION}-${ENV} \
+  --lifecycle-configuration file://lifecycle-policy.json
+# lifecycle-policy.json: transitions objects to Glacier after 90 days of inactivity
 ```
 
 #### Option B: Terraform (Recommended)
@@ -156,18 +178,56 @@ aws lambda create-function \
   --memory-size 512 \
   --environment Variables="{YOUTUBE_API_KEY=YOUR_KEY,S3_BUCKET_BRONZE=yt-pipeline-bronze-${AWS_REGION}-${ENV}}"
 
+# Deploy Silver transform Lambda (for API JSON path)
+cd ../silver_transform_lambda
+pip install -r requirements.txt -t .
+zip -r function.zip .
+aws lambda create-function \
+  --function-name yt-silver-transform-${ENV} \
+  --runtime python3.9 \
+  --handler lambda_function.lambda_handler \
+  --zip-file fileb://function.zip \
+  --role arn:aws:iam::ACCOUNT_ID:role/lambda-execution-role \
+  --timeout 300 \
+  --memory-size 512 \
+  --environment Variables="{S3_BUCKET_BRONZE=yt-pipeline-bronze-${AWS_REGION}-${ENV},S3_BUCKET_SILVER=yt-pipeline-silver-${AWS_REGION}-${ENV}}"
+
 # Deploy DQ Lambda
 cd ../../data_quality
-# Repeat similar steps...
+pip install -r requirements.txt -t .
+zip -r function.zip .
+aws lambda create-function \
+  --function-name yt-dq-${ENV} \
+  --runtime python3.9 \
+  --handler lambda_function.lambda_handler \
+  --zip-file fileb://function.zip \
+  --role arn:aws:iam::ACCOUNT_ID:role/lambda-execution-role \
+  --timeout 300 \
+  --memory-size 256 \
+  --environment Variables="{S3_BUCKET_SILVER=yt-pipeline-silver-${AWS_REGION}-${ENV},SNS_ALERT_TOPIC_ARN=<TOPIC_ARN>}"
 ```
 
-### 3. Deploy Glue Jobs
+### 3. Deploy Glue Crawler
+```bash
+# Create Glue Crawler for Bronze bucket schema discovery
+aws glue create-crawler \
+  --name yt-bronze-crawler-${ENV} \
+  --role arn:aws:iam::ACCOUNT_ID:role/glue-execution-role \
+  --database-name yt_bronze_${ENV} \
+  --targets "{\"S3Targets\": [{\"Path\": \"s3://yt-pipeline-bronze-${AWS_REGION}-${ENV}/youtube/\"}]}" \
+  --schedule "cron(0 */6 * * ? *)"
+
+# Run crawler manually to seed catalog
+aws glue start-crawler --name yt-bronze-crawler-${ENV}
+```
+
+### 4. Deploy Glue Jobs
 ```bash
 # Upload scripts to S3
 aws s3 cp glue_jobs/bronze_to_silver_statistics.py s3://yt-pipeline-scripts-${AWS_REGION}-${ENV}/glue/
 aws s3 cp glue_jobs/silver_to_gold_analytics.py s3://yt-pipeline-scripts-${AWS_REGION}-${ENV}/glue/
 
-# Create Glue jobs
+# Create Bronze-to-Silver Glue job (for Kaggle CSV/JSON path)
 aws glue create-job \
   --name bronze-to-silver-${ENV} \
   --role arn:aws:iam::ACCOUNT_ID:role/glue-execution-role \
@@ -175,9 +235,18 @@ aws glue create-job \
   --glue-version "4.0" \
   --number-of-workers 2 \
   --worker-type G.1X
+
+# Create Silver-to-Gold Glue job
+aws glue create-job \
+  --name silver-to-gold-${ENV} \
+  --role arn:aws:iam::ACCOUNT_ID:role/glue-execution-role \
+  --command "Name=glueetl,ScriptLocation=s3://yt-pipeline-scripts-${AWS_REGION}-${ENV}/glue/silver_to_gold_analytics.py" \
+  --glue-version "4.0" \
+  --number-of-workers 2 \
+  --worker-type G.1X
 ```
 
-### 4. Deploy Step Functions Workflow
+### 5. Deploy Step Functions Workflow
 ```bash
 aws stepfunctions create-state-machine \
   --name yt-pipeline-${ENV} \
@@ -185,19 +254,20 @@ aws stepfunctions create-state-machine \
   --role-arn arn:aws:iam::ACCOUNT_ID:role/stepfunctions-execution-role
 ```
 
-### 5. Configure Scheduled Execution
+### 6. Configure EventBridge Scheduled Trigger
 ```bash
-# Run every 6 hours
+# Run every 6 hours via Amazon EventBridge
 aws events put-rule \
   --name yt-pipeline-schedule \
-  --schedule-expression "rate(6 hours)"
+  --schedule-expression "rate(6 hours)" \
+  --description "Triggers YouTube trending pipeline every 6 hours"
 
 aws events put-targets \
   --rule yt-pipeline-schedule \
   --targets "Id=1,Arn=arn:aws:states:REGION:ACCOUNT_ID:stateMachine:yt-pipeline-${ENV},RoleArn=arn:aws:iam::ACCOUNT_ID:role/eventbridge-execution-role"
 ```
 
-### 6. Run the Pipeline
+### 7. Run the Pipeline
 
 #### Manual Execution
 ```bash
@@ -214,6 +284,8 @@ https://console.aws.amazon.com/states/home?region=REGION#/statemachines
 aws logs tail /aws/lambda/yt-ingestion-${ENV} --follow
 ```
 
+---
+
 ## 📚 Documentation
 
 ### Pipeline Stages
@@ -221,12 +293,15 @@ aws logs tail /aws/lambda/yt-ingestion-${ENV} --follow
 <details>
 <summary><strong>Stage 1: Data Ingestion (Bronze Layer)</strong></summary>
 
+**Trigger:** Amazon EventBridge (scheduled every 6 hours)
+
 **Lambda Function:** `youtube_api_integration/lambda_function.py`
 
 **What it does:**
 - Fetches top 50 trending videos per region via YouTube Data API v3
 - Retrieves category ID mappings for each region
 - Stores raw JSON in S3 with partitioning: `region=XX/date=YYYY-MM-DD/hour=HH`
+- A separate Python script ingests Kaggle CSV/JSON datasets into the same Bronze bucket
 
 **Configuration:**
 ```python
@@ -245,9 +320,93 @@ s3://bronze-bucket/
 </details>
 
 <details>
+<summary><strong>Stage 1b: Schema Discovery (Glue Crawler)</strong></summary>
+
+**Glue Crawler:** `yt-bronze-crawler`
+
+**What it does:**
+- Runs automatically after ingestion to scan the Bronze S3 bucket
+- Infers schema from raw JSON and CSV files
+- Registers discovered tables and partitions into the **AWS Glue Data Catalog**
+- Makes Bronze data immediately queryable via Athena without manual schema definitions
+
+**Crawler Configuration:**
+```bash
+Target Path:  s3://yt-pipeline-bronze-*/youtube/
+Database:     yt_bronze_dev
+Schedule:     Every 6 hours (aligned with ingestion)
+```
+
+**Why it matters:**  
+Without the Crawler, downstream Glue ETL jobs would have no schema reference for the raw Bronze data. It acts as the bridge between raw S3 files and the Glue catalog metadata layer.
+
+</details>
+
+<details>
+<summary><strong>Stage 1c: Bronze Archival (S3 Glacier)</strong></summary>
+
+**Service:** S3 Lifecycle Policy → Amazon S3 Glacier
+
+**What it does:**
+- Raw Bronze data is retained in S3 Standard for active processing
+- After **90 days**, objects are automatically transitioned to **S3 Glacier** for long-term cold storage
+- Reduces Bronze storage costs by up to **80%** for historical data
+- Data can be restored from Glacier within 3–5 hours (Standard retrieval) when needed
+
+**Lifecycle Policy (`lifecycle-policy.json`):**
+```json
+{
+  "Rules": [
+    {
+      "ID": "GlacierArchiveRule",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "youtube/"
+      },
+      "Transitions": [
+        {
+          "Days": 90,
+          "StorageClass": "GLACIER"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Apply the policy:**
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket yt-pipeline-bronze-us-east-1-dev \
+  --lifecycle-configuration file://lifecycle-policy.json
+```
+
+</details>
+
+<details>
 <summary><strong>Stage 2: Data Cleansing (Silver Layer)</strong></summary>
 
-**Glue Job:** `bronze_to_silver_statistics.py`
+The Silver layer runs **two parallel transformation paths** depending on the data source:
+
+---
+
+#### Path A — Lambda Transformation (YouTube API JSON)
+
+**Lambda Function:** `lambdas/silver_transform_lambda/lambda_function.py`
+
+**What it does:**
+- Reads raw JSON files written by the ingestion Lambda
+- Flattens nested JSON structures (e.g., `snippet`, `statistics` objects from the YouTube API)
+- Casts fields to correct types and adds derived metrics
+- Writes output as **Parquet** to the Silver bucket
+
+**Triggered by:** Step Functions `ParallelTransform` state (branch 1)
+
+---
+
+#### Path B — Glue ETL Cleansing (Kaggle CSV/JSON)
+
+**Glue Job:** `glue_jobs/bronze_to_silver_statistics.py`
 
 **Transformations:**
 - **Schema Unification** — Handles both API JSON and Kaggle CSV formats
@@ -261,7 +420,11 @@ s3://bronze-bucket/
 - **Null Handling** — Fills missing values with defaults (0 for numeric, 'Unknown' for strings)
 - **Partitioning** — Outputs partitioned by region for efficient querying
 
-**Output Schema:**
+**Triggered by:** Step Functions `ParallelTransform` state (branch 2)
+
+---
+
+**Combined Output Schema (both paths produce the same schema):**
 ```
 video_id: string
 title: string
@@ -276,6 +439,8 @@ like_ratio: double
 engagement_rate: double
 region: string
 ```
+
+Both paths write to **Amazon S3 (Silver bucket)** and register the schema in the **AWS Glue Data Catalog**.
 
 </details>
 
@@ -321,7 +486,7 @@ Timestamp: 2026-04-01 14:23:45 UTC
 <details>
 <summary><strong>Stage 4: Business Aggregations (Gold Layer)</strong></summary>
 
-**Glue Job:** `silver_to_gold_analytics.py`
+**Glue Job:** `glue_jobs/silver_to_gold_analytics.py`
 
 **Output Tables:**
 
@@ -372,7 +537,7 @@ CREATE EXTERNAL TABLE channel_analytics (
     avg_engagement_rate DOUBLE,
     times_trending BIGINT,
     rank_in_region INT,
-    categories STRING  -- Comma-separated list
+    categories STRING
 )
 PARTITIONED BY (region STRING)
 STORED AS PARQUET
@@ -426,6 +591,8 @@ ORDER BY view_share_pct DESC;
 
 </details>
 
+---
+
 ### Configuration Reference
 
 <details>
@@ -433,20 +600,27 @@ ORDER BY view_share_pct DESC;
 
 **Ingestion Lambda:**
 ```bash
-YOUTUBE_API_KEY=AIzaSy...              # Required
-S3_BUCKET_BRONZE=yt-pipeline-bronze-*  # Required
-YOUTUBE_REGIONS=US,GB,CA,DE,FR,IN,JP,KR,MX,RU  # Optional (default shown)
-MAX_RESULTS_PER_REGION=50              # Optional
+YOUTUBE_API_KEY=AIzaSy...                          # Required
+S3_BUCKET_BRONZE=yt-pipeline-bronze-*              # Required
+YOUTUBE_REGIONS=US,GB,CA,DE,FR,IN,JP,KR,MX,RU     # Optional (default shown)
+MAX_RESULTS_PER_REGION=50                          # Optional
+```
+
+**Silver Transform Lambda (API JSON path):**
+```bash
+S3_BUCKET_BRONZE=yt-pipeline-bronze-*              # Required
+S3_BUCKET_SILVER=yt-pipeline-silver-*              # Required
+GLUE_DB_SILVER=yt_silver_dev                       # Required
 ```
 
 **Data Quality Lambda:**
 ```bash
-S3_BUCKET_SILVER=yt-pipeline-silver-*  # Required
-GLUE_DB_SILVER=yt_silver_dev           # Required
-SNS_ALERT_TOPIC_ARN=arn:aws:sns:...    # Required
-DQ_MIN_ROW_COUNT=10                    # Optional
-DQ_MAX_NULL_PERCENT=5.0                # Optional
-DQ_FRESHNESS_HOURS=48                  # Optional
+S3_BUCKET_SILVER=yt-pipeline-silver-*              # Required
+GLUE_DB_SILVER=yt_silver_dev                       # Required
+SNS_ALERT_TOPIC_ARN=arn:aws:sns:...                # Required
+DQ_MIN_ROW_COUNT=10                                # Optional
+DQ_MAX_NULL_PERCENT=5.0                            # Optional
+DQ_FRESHNESS_HOURS=48                              # Optional
 ```
 
 **Glue Jobs:**
@@ -467,14 +641,14 @@ DQ_FRESHNESS_HOURS=48                  # Optional
 **State Machine Definition:** `step_functions/pipeline_orchestration.json`
 
 **Workflow Steps:**
-1. IngestData (Lambda) → Fetch YouTube data
-2. Wait (5 minutes) → Allow S3 consistency
-3. ParallelTransform (Parallel state):
-   - TransformStatistics (Glue Job)
-   - TransformReference (Lambda)
-4. DataQualityCheck (Lambda) → Validation gate
-5. GoldAggregation (Glue Job) → Business analytics
-6. SendSuccessNotification (SNS)
+1. **IngestData** (Lambda) → Fetch YouTube API data & trigger Kaggle ingestion script
+2. **Wait** (5 minutes) → Allow S3 consistency and Glue Crawler to complete
+3. **ParallelTransform** (Parallel state):
+   - Branch A: Silver Transform Lambda (handles raw JSON from YouTube API)
+   - Branch B: Bronze-to-Silver Glue Job (handles CSV/JSON from Kaggle)
+4. **DataQualityCheck** (Lambda) → Validation gate
+5. **GoldAggregation** (Glue Job) → Business analytics
+6. **SendSuccessNotification** (SNS)
 
 **Error Handling:**
 - **Retry Policy:** 3 attempts with exponential backoff (1s, 2s, 4s)
@@ -491,6 +665,8 @@ DQ_FRESHNESS_HOURS=48                  # Optional
 ```
 
 </details>
+
+---
 
 ## 🎯 Use Cases
 
@@ -554,12 +730,18 @@ Build predictive models using historical trending data:
 - Train models on trending patterns
 - Predict future viral content
 
+---
+
 ## 🧪 Testing
 
 ### Unit Tests
 ```bash
 # Test Lambda functions
 cd lambdas/youtube_api_integration
+python -m pytest tests/ -v
+
+# Test Silver transform Lambda
+cd lambdas/silver_transform_lambda
 python -m pytest tests/ -v
 
 # Test Glue jobs locally
@@ -582,6 +764,8 @@ python test_pipeline_e2e.py --environment test
 cd tests
 python test_gold_layer_quality.py --region US --date 2026-04-01
 ```
+
+---
 
 ## 📊 Demo
 
@@ -637,6 +821,8 @@ Connect QuickSight to the Gold Athena tables to create visualizations:
 - Channel ranking trends (area chart)
 - Videos trending over time (timeline)
 
+---
+
 ## 🔧 Troubleshooting
 
 <details>
@@ -655,6 +841,28 @@ aws lambda get-function-configuration --function-name yt-ingestion-dev \
 
 # Test API manually
 curl "https://www.googleapis.com/youtube/v3/videos?part=snippet&chart=mostPopular&regionCode=US&key=YOUR_KEY"
+```
+
+</details>
+
+<details>
+<summary><strong>Glue Crawler Issues</strong></summary>
+
+**Issue:** Glue Crawler fails or doesn't discover new partitions
+
+**Solution:**
+```bash
+# Check crawler status
+aws glue get-crawler --name yt-bronze-crawler-dev
+
+# View last crawl logs
+aws glue get-crawler-metrics --crawler-name-list yt-bronze-crawler-dev
+
+# Manually trigger crawler
+aws glue start-crawler --name yt-bronze-crawler-dev
+
+# If partitions aren't discovered, run MSCK REPAIR in Athena
+MSCK REPAIR TABLE yt_bronze_dev.raw_statistics;
 ```
 
 </details>
@@ -706,13 +914,38 @@ spark-submit --master local[*] glue_jobs/bronze_to_silver_statistics.py \
 
 </details>
 
+<details>
+<summary><strong>S3 Glacier Retrieval</strong></summary>
+
+**Issue:** Need to restore archived Bronze data for reprocessing
+
+**Solution:**
+```bash
+# Initiate restore request (Standard retrieval: 3-5 hours)
+aws s3api restore-object \
+  --bucket yt-pipeline-bronze-us-east-1-dev \
+  --key "youtube/raw_statistics/region=US/date=2025-01-01/hour=12/trending_xxx.json" \
+  --restore-request '{"Days":7,"GlacierJobParameters":{"Tier":"Standard"}}'
+
+# Check restore status
+aws s3api head-object \
+  --bucket yt-pipeline-bronze-us-east-1-dev \
+  --key "youtube/raw_statistics/region=US/date=2025-01-01/hour=12/trending_xxx.json"
+# Look for "Restore" field in response — "ongoing-request=false" means restore is complete
+```
+
+</details>
+
+---
+
 ## 🚀 Performance Optimization
 
 ### Cost Optimization
 
 | Strategy | Savings | Implementation |
 |----------|---------|-----------------|
-| S3 Intelligent Tiering | 30-40% | Enable on Bronze bucket after 30 days |
+| S3 Glacier Archival | 70-80% | Lifecycle policy transitions Bronze data after 90 days |
+| S3 Intelligent Tiering | 30-40% | Enable on Bronze bucket for active data |
 | Glue job auto-scaling | 20-30% | Use MaxCapacity instead of fixed workers |
 | Athena query result caching | 50%+ | Enable in workgroup settings |
 | Parquet compression | 80% | Already implemented (Snappy) |
@@ -745,5 +978,3 @@ SELECT region, trending_date_parsed, SUM(views) as total_views
 FROM yt_silver_dev.cleansed_statistics
 GROUP BY region, trending_date_parsed;
 ```
-
-
